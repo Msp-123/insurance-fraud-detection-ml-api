@@ -791,6 +791,41 @@ The three libraries perform comparably, with XGBoost slightly ahead — confirmi
 the original choice. The largest practical win is calibration, which more than
 halves the Brier score. Exact numbers vary slightly with the random seed.
 
+### Model Improvement Visuals
+
+#### Model Comparison (cross-validated PR-AUC)
+
+![Model Comparison](assets/images/model_comparison.png)
+
+Each bar is the mean PR-AUC over the 5 cross-validation folds; the error bars
+show ±1 standard deviation. The three gradient-boosting libraries land within
+each other's error bars, so no model is clearly better — XGBoost's small lead,
+combined with it already being wired into the production pipeline, justifies
+keeping it as the default. The absolute level (~0.25) reflects how hard this
+imbalanced problem is, not a bug in any single model.
+
+#### Probability Calibration (reliability curve)
+
+![Calibration Curve](assets/images/calibration_curve.png)
+
+The dashed diagonal is perfect calibration: points on it mean "when the model
+says 0.3, about 30% of those claims really are fraud." The **uncalibrated**
+curve (trained with `scale_pos_weight`) sits far from the diagonal — the
+imbalance weighting inflates probabilities, so the raw scores are good for
+*ranking* but not for *probability*. After **sigmoid/isotonic** calibration the
+curve hugs the diagonal and the Brier score drops from 0.125 to ~0.051, making
+the probabilities trustworthy for risk bands and expected-cost thresholds.
+
+#### Stability (PR-AUC across seeds)
+
+![Stability](assets/images/stability_pr_auc.png)
+
+Each box is the distribution of fold PR-AUC for one random seed; the red dashed
+line is the overall mean. The boxes overlap heavily and the coefficient of
+variation is ~0.10, so the model's performance does not hinge on a lucky split —
+it is *moderately stable*. A model whose boxes jumped around wildly would be a
+red flag that the score was an artefact of one particular fold.
+
 ---
 
 ## 9. Testing
