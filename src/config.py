@@ -32,6 +32,15 @@ MODEL_PATH = ARTIFACTS_DIR / "model.pkl"
 THRESHOLD_PATH = ARTIFACTS_DIR / "threshold.json"
 METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
 
+# Model-improvement artifacts (hyperparameter tuning, comparison,
+# calibration and stability testing).
+BEST_PARAMS_PATH = ARTIFACTS_DIR / "best_params.json"
+HYPERPARAMETER_SEARCH_PATH = ARTIFACTS_DIR / "hyperparameter_search_results.json"
+MODEL_COMPARISON_PATH = ARTIFACTS_DIR / "model_comparison.json"
+CALIBRATED_MODEL_PATH = ARTIFACTS_DIR / "calibrated_model.pkl"
+CALIBRATION_REPORT_PATH = ARTIFACTS_DIR / "calibration_results.json"
+STABILITY_REPORT_PATH = ARTIFACTS_DIR / "stability_results.json"
+
 
 # =========================================================
 # Project settings
@@ -57,6 +66,22 @@ RISK_LEVEL_THRESHOLDS = {
     "low": 0.30,
     "medium": 0.70
 }
+
+# Cross-validation settings (shared by tuning, comparison and stability).
+CV_FOLDS = 5
+
+# Primary scoring metric for model selection on this imbalanced problem.
+# Average precision == area under the precision-recall curve (PR-AUC).
+CV_SCORING = "average_precision"
+
+# Cost-sensitive learning: relative cost of a missed fraud (false negative)
+# versus a wrongly flagged legitimate claim (false positive). A missed fraud
+# is assumed far more expensive than an unnecessary investigation.
+FALSE_NEGATIVE_COST = 10.0
+FALSE_POSITIVE_COST = 1.0
+
+# Seeds used for repeated cross-validation in stability testing.
+STABILITY_SEEDS = [42, 7, 13, 21, 99]
 
 
 # =========================================================

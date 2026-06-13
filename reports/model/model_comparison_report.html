@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<title>Model Comparison Report</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f5f6f8; color:#222; margin:0; }
+.container { max-width:1100px; margin:auto; padding:36px; }
+.section { background:#fff; padding:24px; border-radius:14px; margin-bottom:24px;
+           box-shadow:0 2px 10px rgba(0,0,0,.08); }
+table { border-collapse:collapse; width:100%; font-size:14px; }
+th,td { border:1px solid #ddd; padding:10px; text-align:left; }
+th { background:#f3f4f6; }
+img { max-width:100%; }
+.good { background:#ecfdf5; border-left:5px solid #10b981; padding:14px; border-radius:8px; }
+</style></head>
+<body><div class="container">
+<h1>Model Comparison — XGBoost vs LightGBM vs CatBoost</h1>
+<div class="section">
+  <div class="good"><strong>Best model (CV PR-AUC):</strong> XGBoost
+  (0.2508)</div>
+  <p>All models use stratified 5-fold cross-validation and
+  cost-sensitive imbalance handling. PR-AUC is the primary metric for this
+  imbalanced (~6% fraud) problem.</p>
+</div>
+<div class="section">
+  <h2>Metrics</h2>
+  <table>
+    <tr><th>Model</th><th>CV PR-AUC</th><th>CV ROC-AUC</th><th>CV F1</th>
+        <th>Test PR-AUC</th><th>Test ROC-AUC</th></tr>
+    
+            <tr style="background:#ecfdf5;font-weight:bold;">
+                <td>XGBoost</td>
+                <td>0.2508 ± 0.0232</td>
+                <td>0.8406 ± 0.0067</td>
+                <td>0.2729 ± 0.0105</td>
+                <td>0.2508</td>
+                <td>0.8470</td>
+            </tr>
+            <tr>
+                <td>LightGBM</td>
+                <td>0.2434 ± 0.0239</td>
+                <td>0.8388 ± 0.0098</td>
+                <td>0.2685 ± 0.0119</td>
+                <td>0.2290</td>
+                <td>0.8319</td>
+            </tr>
+            <tr>
+                <td>CatBoost</td>
+                <td>0.2483 ± 0.0305</td>
+                <td>0.8508 ± 0.0138</td>
+                <td>0.2728 ± 0.0152</td>
+                <td>0.2578</td>
+                <td>0.8594</td>
+            </tr>
+  </table>
+</div>
+<div class="section">
+  <h2>Cross-Validated PR-AUC</h2>
+  <img src="model_comparison.png" />
+</div>
+</div></body></html>

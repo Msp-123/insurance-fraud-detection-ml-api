@@ -158,7 +158,13 @@ Vehicle Insurance Claim Fraud Detection/
 │   ├── evaluate.py
 │   ├── threshold_tuning.py
 │   ├── explain.py
-│   └── predict.py
+│   ├── predict.py
+│   │
+│   ├── cv_utils.py              # shared CV / imbalance / cost helpers
+│   ├── hyperparameter_tuning.py # RandomizedSearchCV + cross-validation
+│   ├── model_comparison.py      # XGBoost vs LightGBM vs CatBoost
+│   ├── calibration.py           # probability calibration
+│   └── stability.py             # repeated-CV stability testing
 │
 ├── api/
 │   ├── __init__.py
@@ -199,11 +205,19 @@ Vehicle Insurance Claim Fraud Detection/
 │   └── predictions/
 │
 ├── tests/
+│   ├── conftest.py
+│   ├── test_feature_engineering.py
+│   ├── test_predict_logic.py
 │   ├── test_preprocessing.py
-│   ├── test_prediction.py
+│   ├── test_threshold_tuning.py
+│   ├── test_explain.py
+│   ├── test_file_utils.py
+│   ├── test_integration_pipeline.py
 │   └── test_api.py
 │
 ├── requirements.txt
+├── requirements-dev.txt
+├── pytest.ini
 ├── README.md
 ├── Dockerfile
 └── .gitignore
@@ -263,24 +277,36 @@ vehicle-fraud-venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Example `requirements.txt`:
+Dependencies are pinned to exact versions in `requirements.txt` for
+reproducible installs:
 
 ```text
-pandas
-numpy
-scikit-learn
-xgboost
-shap
-matplotlib
-scipy
-fastapi
-uvicorn
-pydantic
-joblib
-python-multipart
-openpyxl
-xlrd
+pandas==2.3.3
+numpy==2.0.2
+scikit-learn==1.6.1
+xgboost==2.1.4
+lightgbm==4.6.0
+catboost==1.2.10
+shap==0.49.1
+matplotlib==3.9.4
+seaborn==0.13.2
+fastapi==0.128.8
+uvicorn==0.39.0
+pydantic==2.13.4
+joblib==1.5.3
+python-multipart==0.0.20
+scipy==1.13.1
+openpyxl==3.1.5
+xlrd==2.0.2
 ```
+
+To also install the testing tools (`pytest`, `httpx`), use the dev requirements:
+
+```powershell
+pip install -r requirements-dev.txt
+```
+
+See [Section 9: Testing](#9-testing) for how to run the test suite.
 
 ---
 
@@ -688,7 +714,191 @@ POST /predict-explain
 ![SHAP Summary](assets/images/shap_summary.png)
 ---
 
-## 9. FastAPI Service
+## Model Improvement & Validation
+
+Beyond the single baseline XGBoost model, the project includes a set of optional
+modules for improving and validating the model. They all read the same
+`artifacts/preprocessed_data.pkl` and use the same imbalance handling, so they
+are directly comparable. All of them use **stratified K-fold cross-validation**
+and optimise **PR-AUC** (`average_precision`), the right metric for a ~6% fraud
+rate.
+
+Shared settings live in [`src/config.py`](src/config.py) (`CV_FOLDS`,
+`CV_SCORING`, cost weights, stability seeds); shared helpers live in
+[`src/cv_utils.py`](src/cv_utils.py).
+
+### Step 9: Hyperparameter Tuning
+
+```powershell
+python src\hyperparameter_tuning.py
+```
+
+`RandomizedSearchCV` over the XGBoost hyperparameters (40 candidates × 5-fold CV),
+scored on PR-AUC. Class imbalance is fixed via `scale_pos_weight`
+(**cost-sensitive learning**), so the search focuses on tree/regularisation
+parameters. Saves `artifacts/best_params.json` and the ranked
+`artifacts/hyperparameter_search_results.json`.
+
+### Step 10: Model Comparison (XGBoost vs LightGBM vs CatBoost)
+
+```powershell
+python src\model_comparison.py
+```
+
+Cross-validates all three gradient-boosting libraries under identical CV and
+imbalance handling, reporting PR-AUC / ROC-AUC / F1 (mean ± std) plus a held-out
+test score. Saves `artifacts/model_comparison.json`,
+`reports/model/model_comparison.png` and an HTML report.
+
+### Step 11: Probability Calibration
+
+```powershell
+python src\calibration.py
+```
+
+Wraps the model with `CalibratedClassifierCV` (sigmoid and isotonic) and measures
+**Brier score** + log loss before/after, with a reliability curve. A
+`scale_pos_weight` model ranks well but is badly miscalibrated; calibration makes
+the predicted probabilities trustworthy for risk banding. Saves
+`artifacts/calibrated_model.pkl`, `artifacts/calibration_results.json` and
+`reports/model/calibration_curve.png`.
+
+### Step 12: Stability Testing
+
+```powershell
+python src\stability.py
+```
+
+Repeats stratified K-fold CV across several random seeds and reports the spread
+of PR-AUC (std, range, coefficient of variation) with a verdict. Low spread means
+the model generalises consistently rather than depending on a lucky split. Saves
+`artifacts/stability_results.json` and `reports/model/stability_pr_auc.png`.
+
+### Results Summary
+
+Representative results on this dataset (CV PR-AUC, mean ± std):
+
+| Check | Result |
+|-------|--------|
+| Hyperparameter tuning (best XGBoost) | **0.257** PR-AUC (vs ~0.251 baseline) |
+| XGBoost | 0.251 ± 0.023 |
+| LightGBM | 0.243 ± 0.024 |
+| CatBoost | 0.248 ± 0.031 |
+| Calibration (Brier, lower is better) | 0.125 → **0.051** (sigmoid) |
+| Stability | mean 0.252, CV ≈ 0.10 → *moderately stable* |
+
+The three libraries perform comparably, with XGBoost slightly ahead — confirming
+the original choice. The largest practical win is calibration, which more than
+halves the Brier score. Exact numbers vary slightly with the random seed.
+
+---
+
+## 9. Testing
+
+The project ships with an automated test suite under `tests/`, runnable with
+[pytest](https://docs.pytest.org/). The tests are split into two layers so the
+suite stays green even on a fresh checkout (model artifacts are gitignored):
+
+- **Unit tests** — pure logic, no trained model or dataset required. They always run.
+- **Integration / API tests** — exercise the real artifacts (`model.pkl`,
+  `preprocessor.pkl`, `threshold.json`, ...). These are **automatically skipped**
+  when the artifacts are not present, and run once you have executed the
+  preprocessing → training → threshold-tuning steps.
+
+### 9.1 Test Layout
+
+```text
+tests/
+├── conftest.py                        # path setup, shared fixtures, artifact-skip marker
+├── test_feature_engineering.py        # safe_* helpers + each feature step + full pipeline
+├── test_predict_logic.py              # risk levels, recommendations, column alignment, threshold loader
+├── test_preprocessing.py              # feature/target split, one-hot encoding, imputation, feature names
+├── test_threshold_tuning.py           # threshold sweep + business selection strategy + fallback
+├── test_explain.py                    # SHAP format handling, raw-column mapping, reason text
+├── test_file_utils.py                 # CSV/Excel upload parsing and validation
+├── test_cv_utils.py                   # imbalance weights, cost model, CV splitter, score summaries
+├── test_stability.py                  # coefficient of variation, stability summary + verdict
+├── test_model_improvement_builders.py # search space + model builders (tuning/comparison/calibration)
+├── test_integration_pipeline.py       # end-to-end predict / batch / SHAP with the real model
+└── test_api.py                        # FastAPI endpoints via TestClient
+```
+
+### 9.2 Test Count
+
+The suite currently contains **141 tests**. Each `test_*` function counts as one
+test, and parametrized tests count once per case, so the numbers reflect the
+number of scenarios checked rather than the number of functions written.
+
+| File | Tests |
+|------|------:|
+| `test_feature_engineering.py` | 23 |
+| `test_predict_logic.py` | 23 |
+| `test_cv_utils.py` | 16 |
+| `test_explain.py` | 13 |
+| `test_stability.py` | 11 |
+| `test_file_utils.py` | 10 |
+| `test_preprocessing.py` | 10 |
+| `test_model_improvement_builders.py` | 10 |
+| `test_api.py` | 9 |
+| `test_threshold_tuning.py` | 9 |
+| `test_integration_pipeline.py` | 7 |
+| **Total** | **141** |
+
+On a fresh checkout without trained artifacts, the 16 integration/API tests
+(`test_integration_pipeline.py` + `test_api.py`) are **skipped**, so 125 tests run.
+
+To see the per-file breakdown yourself:
+
+```bash
+pytest --collect-only
+```
+
+### 9.3 What Is Covered
+
+| Area | Examples |
+|------|----------|
+| Feature engineering | Engineered flags are correct; `safe_*` helpers return 0 (not crash) on missing columns; pipeline is deterministic and does not mutate its input |
+| Prediction logic | Risk-level boundaries, business recommendations, target/ID dropping, train/inference column alignment, threshold fallback to the default |
+| Preprocessing | Numeric/categorical split, dense one-hot with `handle_unknown="ignore"`, median imputation, consistent train/test widths |
+| Threshold tuning | Recall is monotonic in the threshold, confusion counts sum to N, "max precision with recall ≥ 0.7" strategy and its best-F1 fallback |
+| Explainability | SHAP list/2D/3D output normalization, one-hot → raw-column inference (longest prefix wins), human-readable reason text |
+| File I/O | CSV and Excel reading, latin-1 fallback, rejection of empty files and unsupported formats |
+| CV / cost utils | `scale_pos_weight` and balanced class weights, asymmetric cost model, stratified-fold ratio preservation, score summaries |
+| Model improvement | Search-space ranges, tuning/comparison/calibration/stability model builders, CatBoost clone-safety regression guard |
+| API | `/health`, `/predict`, `/predict-explain`, `/batch-predict`, `/predict-file` round-trip + download, and 404 handling |
+
+### 9.4 Install Test Dependencies
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+This installs the runtime requirements plus `pytest` and `httpx` (used by
+FastAPI's `TestClient`).
+
+### 9.5 Run the Tests
+
+```bash
+# Run everything
+pytest
+
+# Verbose
+pytest -v
+
+# A single file
+pytest tests/test_feature_engineering.py
+
+# Only the always-on unit tests (skip integration/API)
+pytest --ignore=tests/test_integration_pipeline.py --ignore=tests/test_api.py
+```
+
+With trained artifacts present, the full suite runs (unit + integration + API).
+Without them, the integration and API tests are reported as **skipped** rather
+than failing.
+
+---
+
+## 10. FastAPI Service
 
 Start the API:
 
@@ -716,9 +926,9 @@ GET  /download-predictions/{file_name}
 
 ---
 
-## 10. API Endpoints
+## 11. API Endpoints
 
-### 10.1 Health Check
+### 11.1 Health Check
 
 ```text
 GET /health
@@ -737,7 +947,7 @@ Example response:
 
 ---
 
-### 10.2 Single Claim Prediction
+### 11.2 Single Claim Prediction
 
 ```text
 POST /predict
@@ -797,7 +1007,7 @@ Example response:
 
 ---
 
-### 10.3 Single Claim Prediction with SHAP Explanation
+### 11.3 Single Claim Prediction with SHAP Explanation
 
 ```text
 POST /predict-explain
@@ -832,7 +1042,7 @@ This endpoint is useful when a business user wants to understand why the model p
 
 ---
 
-### 10.4 Batch JSON Prediction
+### 11.4 Batch JSON Prediction
 
 ```text
 POST /batch-predict
@@ -903,7 +1113,7 @@ Example response:
 
 ---
 
-### 10.5 CSV / Excel File Prediction
+### 11.5 CSV / Excel File Prediction
 
 ```text
 POST /predict-file
@@ -975,7 +1185,7 @@ outputs/predictions/fraud_predictions_20260524_162530_a1b2c3d4.csv
 
 ---
 
-### 10.6 Download Prediction Output
+### 11.6 Download Prediction Output
 
 ```text
 GET /download-predictions/{file_name}
@@ -991,7 +1201,7 @@ This downloads the generated prediction CSV file.
 
 ---
 
-## 11. Output Columns
+## 12. Output Columns
 
 For CSV / Excel file prediction, the output file contains the original input columns plus:
 
@@ -1013,7 +1223,7 @@ Example:
 
 ---
 
-## 12. Risk Level Logic
+## 13. Risk Level Logic
 
 The model returns a fraud probability between 0 and 1.
 
@@ -1041,7 +1251,7 @@ Recommendations:
 
 ---
 
-## 13. Why Accuracy Is Not Enough
+## 14. Why Accuracy Is Not Enough
 
 The dataset is highly imbalanced:
 
@@ -1079,7 +1289,7 @@ This can create financial loss.
 
 ---
 
-## 14. Model Interpretation
+## 15. Model Interpretation
 
 The project uses SHAP for explainability.
 
@@ -1131,7 +1341,7 @@ POST /predict-explain
 
 ---
 
-## 15. Project Strengths
+## 16. Project Strengths
 
 This project demonstrates:
 
@@ -1147,10 +1357,12 @@ This project demonstrates:
 - CSV / Excel batch scoring
 - Modular feature engineering
 - Production-oriented project structure
+- Model improvement & validation (hyperparameter tuning, multi-library comparison, calibration, cross-validation, stability testing)
+- Automated test suite (pytest) covering feature engineering, preprocessing, prediction, threshold tuning, explainability and the API
 
 ---
 
-## 16. Current Limitations
+## 17. Current Limitations
 
 This project is a learning and portfolio project. It has some limitations:
 
@@ -1165,19 +1377,26 @@ This project is a learning and portfolio project. It has some limitations:
 
 ---
 
-## 17. Future Improvements
+## 18. Future Improvements
 
 Possible next steps:
 
 ### Model Improvements
 
-- Hyperparameter tuning
-- LightGBM and CatBoost comparison
-- Probability calibration
-- Cost-sensitive learning
+Implemented (see *Model Improvement & Validation* above):
+
+- ✅ Hyperparameter tuning (`RandomizedSearchCV`)
+- ✅ LightGBM and CatBoost comparison
+- ✅ Probability calibration
+- ✅ Cost-sensitive learning (`scale_pos_weight` / balanced weights)
+- ✅ Cross-validation (stratified K-fold)
+- ✅ Model stability testing (repeated-seed CV)
+
+Still open:
+
 - More advanced feature engineering
-- Cross-validation
-- Model stability testing
+- Wiring the tuned `best_params.json` / calibrated model into the production `train.py`
+- Optuna-based search and cost-based threshold optimisation
 
 ### Evaluation Improvements
 
@@ -1213,7 +1432,8 @@ Possible next steps:
 - Data drift monitoring
 - Prediction drift monitoring
 - Automated retraining pipeline
-- CI/CD pipeline
+- CI/CD pipeline running the pytest suite on every push
+- Expanded test coverage (more edge cases, coverage reporting)
 
 ### UI Improvements
 
@@ -1226,7 +1446,7 @@ Possible next steps:
 
 ---
 
-## 18. Example Commands
+## 19. Example Commands
 
 Run all main steps in order:
 
@@ -1239,6 +1459,15 @@ python src\train.py
 python src\evaluate.py
 python src\threshold_tuning.py
 python src\explain.py
+```
+
+Optional model improvement & validation steps:
+
+```powershell
+python src\hyperparameter_tuning.py
+python src\model_comparison.py
+python src\calibration.py
+python src\stability.py
 ```
 
 Start API:
@@ -1255,7 +1484,7 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## 19. Example PowerShell API Test
+## 20. Example PowerShell API Test
 
 ### Health Check
 
@@ -1273,23 +1502,24 @@ curl.exe -X POST "http://127.0.0.1:8000/predict-file" `
 
 ---
 
-## 20. Technical Stack
+## 21. Technical Stack
 
 | Area | Tools |
 |---|---|
 | Programming Language | Python |
 | Data Processing | Pandas, NumPy |
-| Machine Learning | Scikit-learn, XGBoost |
+| Machine Learning | Scikit-learn, XGBoost, LightGBM, CatBoost |
 | Explainability | SHAP |
-| Visualization | Matplotlib |
+| Visualization | Matplotlib, Seaborn |
 | API | FastAPI, Uvicorn, Pydantic |
+| Testing | pytest, httpx |
 | Serialization | Joblib, JSON |
 | File Support | CSV, Excel, OpenPyXL |
 | Reports | HTML, PNG, CSV |
 
 ---
 
-## 21. Summary
+## 22. Summary
 
 This project builds a complete fraud detection system for vehicle insurance claims.
 
