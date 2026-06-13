@@ -9,6 +9,7 @@ from config import (
     MODEL_PATH,
     ARTIFACTS_DIR,
     RANDOM_STATE,
+    BEST_PARAMS_PATH,
 )
 
 
@@ -67,24 +68,65 @@ def calculate_scale_pos_weight(y_train):
 
 
 # =========================================================
+# Hyperparameters
+# =========================================================
+
+# Manually-tuned defaults, used when no tuned best_params.json is available.
+DEFAULT_XGB_PARAMS = {
+    "n_estimators": 300,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "min_child_weight": 3,
+    "gamma": 0.1,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+}
+
+
+def load_best_params() -> dict:
+    """
+    Load tuned hyperparameters produced by hyperparameter_tuning.py.
+
+    Returns the dict of best params if best_params.json exists and is valid,
+    otherwise None so the caller can fall back to DEFAULT_XGB_PARAMS.
+    """
+
+    if not BEST_PARAMS_PATH.exists():
+        return None
+
+    try:
+        with open(BEST_PARAMS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    best_params = data.get("best_params")
+
+    if not isinstance(best_params, dict) or not best_params:
+        return None
+
+    return best_params
+
+
+# =========================================================
 # Model
 # =========================================================
 
-def build_xgboost_model(scale_pos_weight: float) -> XGBClassifier:
+def build_xgboost_model(scale_pos_weight: float, params: dict = None) -> XGBClassifier:
     """
     Build XGBoost classifier.
+
+    If `params` is None, the tuned best_params.json is used when available,
+    otherwise the manually-tuned DEFAULT_XGB_PARAMS.
     """
 
+    if params is None:
+        params = load_best_params() or DEFAULT_XGB_PARAMS
+
     model = XGBClassifier(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        min_child_weight=3,
-        gamma=0.1,
-        reg_alpha=0.1,
-        reg_lambda=1.0,
+        **params,
         objective="binary:logistic",
         eval_metric="logloss",
         scale_pos_weight=scale_pos_weight,
@@ -168,7 +210,13 @@ def main():
 
     scale_pos_weight, negative_count, positive_count = calculate_scale_pos_weight(y_train)
 
-    model = build_xgboost_model(scale_pos_weight=scale_pos_weight)
+    tuned_params = load_best_params()
+    params_source = "tuned (best_params.json)" if tuned_params else "default"
+    params = tuned_params or DEFAULT_XGB_PARAMS
+
+    print(f"Hyperparameters: {params_source}")
+
+    model = build_xgboost_model(scale_pos_weight=scale_pos_weight, params=params)
 
     model = train_model(model, X_train, y_train)
 
@@ -176,6 +224,7 @@ def main():
 
     summary = {
         "model_type": "XGBClassifier",
+        "hyperparameter_source": params_source,
         "train_rows": int(X_train.shape[0]),
         "train_features": int(X_train.shape[1]),
         "test_rows": int(X_test.shape[0]),
