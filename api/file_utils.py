@@ -19,7 +19,8 @@ def get_file_extension(filename: str) -> str:
 
 async def read_uploaded_file_to_dataframe(
     file: UploadFile,
-    sheet_name: Optional[str] = None
+    sheet_name: Optional[str] = None,
+    max_size_bytes: Optional[int] = None
 ) -> pd.DataFrame:
     """
     Read uploaded CSV or Excel file into pandas DataFrame.
@@ -28,6 +29,8 @@ async def read_uploaded_file_to_dataframe(
     - .csv
     - .xlsx
     - .xls
+
+    If `max_size_bytes` is set, uploads larger than the limit are rejected.
     """
 
     filename = file.filename
@@ -47,6 +50,14 @@ async def read_uploaded_file_to_dataframe(
 
     if len(content) == 0:
         raise ValueError("Uploaded file is empty.")
+
+    if max_size_bytes is not None and len(content) > max_size_bytes:
+        limit_mb = max_size_bytes / (1024 * 1024)
+        actual_mb = len(content) / (1024 * 1024)
+        raise ValueError(
+            f"Uploaded file is too large ({actual_mb:.2f} MB). "
+            f"Maximum allowed size is {limit_mb:.2f} MB."
+        )
 
     buffer = BytesIO(content)
 

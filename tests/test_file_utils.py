@@ -82,3 +82,19 @@ class TestReadUploadedFile:
         upload = _make_upload("data.csv", content)
         df = asyncio.run(read_uploaded_file_to_dataframe(upload))
         assert df.shape == (1, 2)
+
+    def test_rejects_file_over_size_limit(self):
+        content = b"a,b\n1,2\n3,4\n"
+        upload = _make_upload("data.csv", content)
+        with pytest.raises(ValueError, match="too large"):
+            asyncio.run(
+                read_uploaded_file_to_dataframe(upload, max_size_bytes=4)
+            )
+
+    def test_allows_file_within_size_limit(self):
+        content = b"a,b\n1,2\n"
+        upload = _make_upload("data.csv", content)
+        df = asyncio.run(
+            read_uploaded_file_to_dataframe(upload, max_size_bytes=10_000)
+        )
+        assert df.shape == (1, 2)

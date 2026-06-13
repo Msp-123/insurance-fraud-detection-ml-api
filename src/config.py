@@ -85,6 +85,20 @@ STABILITY_SEEDS = [42, 7, 13, 21, 99]
 
 
 # =========================================================
+# API operational / security settings
+# =========================================================
+
+# Maximum accepted upload size for /predict-file (megabytes).
+# Overridable at runtime via the MAX_UPLOAD_SIZE_MB environment variable.
+MAX_UPLOAD_SIZE_MB = 10
+
+# Prediction CSVs written to outputs/predictions/ older than this many hours
+# are deleted (on startup and after each /predict-file run).
+# Overridable via the PREDICTION_RETENTION_HOURS environment variable.
+PREDICTION_RETENTION_HOURS = 24
+
+
+# =========================================================
 # Create required folders
 # =========================================================
 

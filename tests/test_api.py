@@ -100,9 +100,58 @@ class TestPredictFile:
             "/predict-file",
             files={"file": ("data.txt", b"hello", "text/plain")},
         )
-        # file_utils raises ValueError -> handler returns 500.
-        assert resp.status_code == 500
+        # file_utils raises ValueError -> handler returns 400 (client error).
+        assert resp.status_code == 400
+
+    def test_predict_file_rejects_empty_file(self, client):
+        resp = client.post(
+            "/predict-file",
+            files={"file": ("data.csv", b"", "text/csv")},
+        )
+        assert resp.status_code == 400
+
+    def test_predict_file_rejects_oversized_upload(self, client, real_sample_claim, monkeypatch):
+        import pandas as pd
+        from api import main
+
+        # Shrink the limit so a tiny upload trips it.
+        monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 10)
+
+        df = pd.DataFrame([real_sample_claim])
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        resp = client.post(
+            "/predict-file",
+            files={"file": ("claims.csv", csv_bytes, "text/csv")},
+        )
+        assert resp.status_code == 400
+        assert "too large" in resp.json()["detail"]
 
     def test_download_missing_file_returns_404(self, client):
         resp = client.get("/download-predictions/does_not_exist.csv")
         assert resp.status_code == 404
+
+
+class TestApiKeyAuth:
+    def test_disabled_by_default(self, client, real_sample_claim):
+        # No API_KEY env -> auth off -> request allowed.
+        resp = client.post("/predict", json=real_sample_claim)
+        assert resp.status_code == 200
+
+    def test_rejects_missing_key_when_enabled(self, client, real_sample_claim, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+        resp = client.post("/predict", json=real_sample_claim)
+        assert resp.status_code == 401
+
+    def test_accepts_valid_key_when_enabled(self, client, real_sample_claim, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+        resp = client.post(
+            "/predict",
+            json=real_sample_claim,
+            headers={"X-API-Key": "secret-key"},
+        )
+        assert resp.status_code == 200
+
+    def test_health_is_not_protected(self, client, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+        # Health endpoints must stay open even with auth enabled.
+        assert client.get("/health").status_code == 200

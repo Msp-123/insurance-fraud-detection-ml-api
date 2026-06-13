@@ -171,6 +171,8 @@ Vehicle Insurance Claim Fraud Detection/
 │   ├── schemas.py
 │   ├── file_utils.py
 │   ├── model_service.py
+│   ├── security.py             # optional API-key auth
+│   ├── maintenance.py          # prediction-output retention cleanup
 │   └── main.py
 │
 ├── artifacts/
@@ -212,6 +214,11 @@ Vehicle Insurance Claim Fraud Detection/
 │   ├── test_threshold_tuning.py
 │   ├── test_explain.py
 │   ├── test_file_utils.py
+│   ├── test_cv_utils.py
+│   ├── test_stability.py
+│   ├── test_model_improvement_builders.py
+│   ├── test_security.py
+│   ├── test_maintenance.py
 │   ├── test_integration_pipeline.py
 │   └── test_api.py
 │
@@ -739,6 +746,12 @@ scored on PR-AUC. Class imbalance is fixed via `scale_pos_weight`
 parameters. Saves `artifacts/best_params.json` and the ranked
 `artifacts/hyperparameter_search_results.json`.
 
+> **Wired into training:** the next time you run `python src\train.py`, it
+> automatically loads `best_params.json` and trains the final model with the
+> tuned hyperparameters. If the file is absent or invalid it falls back to the
+> manually-tuned defaults. The chosen source is recorded as
+> `hyperparameter_source` in `artifacts/model_training_summary.json`.
+
 ### Step 10: Model Comparison (XGBoost vs LightGBM vs CatBoost)
 
 ```powershell
@@ -850,17 +863,19 @@ tests/
 ├── test_preprocessing.py              # feature/target split, one-hot encoding, imputation, feature names
 ├── test_threshold_tuning.py           # threshold sweep + business selection strategy + fallback
 ├── test_explain.py                    # SHAP format handling, raw-column mapping, reason text
-├── test_file_utils.py                 # CSV/Excel upload parsing and validation
+├── test_file_utils.py                 # CSV/Excel upload parsing, validation, size limit
 ├── test_cv_utils.py                   # imbalance weights, cost model, CV splitter, score summaries
 ├── test_stability.py                  # coefficient of variation, stability summary + verdict
 ├── test_model_improvement_builders.py # search space + model builders (tuning/comparison/calibration)
+├── test_security.py                   # optional API-key dependency
+├── test_maintenance.py                # prediction-output retention cleanup
 ├── test_integration_pipeline.py       # end-to-end predict / batch / SHAP with the real model
-└── test_api.py                        # FastAPI endpoints via TestClient
+└── test_api.py                        # FastAPI endpoints (incl. auth, size limit) via TestClient
 ```
 
 ### 9.2 Test Count
 
-The suite currently contains **141 tests**. Each `test_*` function counts as one
+The suite currently contains **160 tests**. Each `test_*` function counts as one
 test, and parametrized tests count once per case, so the numbers reflect the
 number of scenarios checked rather than the number of functions written.
 
@@ -869,18 +884,20 @@ number of scenarios checked rather than the number of functions written.
 | `test_feature_engineering.py` | 23 |
 | `test_predict_logic.py` | 23 |
 | `test_cv_utils.py` | 16 |
+| `test_api.py` | 15 |
 | `test_explain.py` | 13 |
+| `test_file_utils.py` | 12 |
 | `test_stability.py` | 11 |
-| `test_file_utils.py` | 10 |
 | `test_preprocessing.py` | 10 |
 | `test_model_improvement_builders.py` | 10 |
-| `test_api.py` | 9 |
 | `test_threshold_tuning.py` | 9 |
 | `test_integration_pipeline.py` | 7 |
-| **Total** | **141** |
+| `test_security.py` | 6 |
+| `test_maintenance.py` | 5 |
+| **Total** | **160** |
 
-On a fresh checkout without trained artifacts, the 16 integration/API tests
-(`test_integration_pipeline.py` + `test_api.py`) are **skipped**, so 125 tests run.
+On a fresh checkout without trained artifacts, the 22 integration/API tests
+(`test_integration_pipeline.py` + `test_api.py`) are **skipped**, so 138 tests run.
 
 To see the per-file breakdown yourself:
 
@@ -900,7 +917,9 @@ pytest --collect-only
 | File I/O | CSV and Excel reading, latin-1 fallback, rejection of empty files and unsupported formats |
 | CV / cost utils | `scale_pos_weight` and balanced class weights, asymmetric cost model, stratified-fold ratio preservation, score summaries |
 | Model improvement | Search-space ranges, tuning/comparison/calibration/stability model builders, CatBoost clone-safety regression guard |
-| API | `/health`, `/predict`, `/predict-explain`, `/batch-predict`, `/predict-file` round-trip + download, and 404 handling |
+| Security | API-key dependency: disabled without env, rejects missing/wrong key, accepts valid key, health stays open |
+| Maintenance | Retention cleanup removes only expired files, respects the glob, no-ops on missing dir / negative age |
+| API | `/health`, `/predict`, `/predict-explain`, `/batch-predict`, `/predict-file` round-trip + download, auth, upload size limit, 400/404 handling |
 
 ### 9.4 Install Test Dependencies
 
@@ -957,6 +976,57 @@ POST /predict-explain
 POST /batch-predict
 POST /predict-file
 GET  /download-predictions/{file_name}
+```
+
+### Production Hardening
+
+The service is configured for safe operation, not just local demos:
+
+- **Lifespan startup** — artifacts are loaded via a FastAPI `lifespan` handler
+  (the deprecated `@app.on_event("startup")` has been removed).
+- **Optional API-key auth** — set the `API_KEY` environment variable to require
+  an `X-API-Key` header on all prediction/download endpoints. When `API_KEY` is
+  unset, auth is **disabled** (local dev and tests work unchanged). `/` and
+  `/health` are always open.
+- **Structured errors, no leaks** — endpoints log the full traceback
+  server-side and return a generic message. Client mistakes on `/predict-file`
+  (bad format, empty/oversized file, no rows) return **400**; unexpected
+  failures return **500**. Raw exception text is never sent to the client.
+- **Request logging** — a middleware logs every request as
+  `METHOD path -> status (latency ms)`.
+- **CORS** — configurable allowed origins via `ALLOWED_ORIGINS` (defaults to `*`;
+  credentials are enabled automatically only when explicit origins are listed).
+- **Upload size limit** — `/predict-file` rejects uploads larger than
+  `MAX_UPLOAD_SIZE_MB` (default 10 MB) with a 400.
+- **Output retention** — prediction CSVs in `outputs/predictions/` older than
+  `PREDICTION_RETENTION_HOURS` (default 24 h) are deleted on startup and after
+  each `/predict-file` call, so the directory does not grow forever.
+
+#### Configuration (environment variables)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_KEY` | *(unset)* | Enables API-key auth when set; required `X-API-Key` value |
+| `ALLOWED_ORIGINS` | `*` | Comma-separated CORS origins |
+| `MAX_UPLOAD_SIZE_MB` | `10` | Max `/predict-file` upload size |
+| `PREDICTION_RETENTION_HOURS` | `24` | Age after which prediction CSVs are purged |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
+
+Example (PowerShell), enabling auth and a stricter limit:
+
+```powershell
+$env:API_KEY = "my-secret-key"
+$env:MAX_UPLOAD_SIZE_MB = "5"
+uvicorn api.main:app --reload
+```
+
+Then call a protected endpoint with the header:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/predict" `
+  -H "X-API-Key: my-secret-key" `
+  -H "Content-Type: application/json" `
+  -d '{}'
 ```
 
 ---
@@ -1393,6 +1463,7 @@ This project demonstrates:
 - Modular feature engineering
 - Production-oriented project structure
 - Model improvement & validation (hyperparameter tuning, multi-library comparison, calibration, cross-validation, stability testing)
+- Production-hardened API (lifespan startup, optional API-key auth, structured errors, request logging, CORS, upload size limit, output retention)
 - Automated test suite (pytest) covering feature engineering, preprocessing, prediction, threshold tuning, explainability and the API
 
 ---
@@ -1405,10 +1476,16 @@ This project is a learning and portfolio project. It has some limitations:
 2. Some columns may not be available at the real-time scoring stage in a real production system.
 3. Some variables may create potential leakage depending on the real-world claim workflow.
 4. The current model is trained on a single static dataset.
-5. No production monitoring is implemented yet.
-6. No authentication or authorization is added to the API.
-7. The model is not calibrated yet.
-8. CSV / Excel prediction does not currently add SHAP explanations to every row, to keep batch scoring fast and output files clean.
+5. No production monitoring (data/prediction drift) is implemented yet.
+6. A calibrated model is produced (`calibration.py`) but the API still serves the uncalibrated ranking model.
+7. CSV / Excel prediction does not currently add SHAP explanations to every row, to keep batch scoring fast and output files clean.
+8. API-key auth is single-key and header-based; no per-user accounts, rate limiting or OAuth.
+
+> Several earlier limitations have since been addressed: the API now supports
+> optional **API-key authentication**, **structured error handling** without
+> leaking internals, **request logging**, **CORS**, an **upload size limit**,
+> **prediction-output retention**, and **probability calibration** is available
+> as a module. See *FastAPI Service → Production Hardening* and the *Changelog*.
 
 ---
 
@@ -1426,11 +1503,12 @@ Implemented (see *Model Improvement & Validation* above):
 - ✅ Cost-sensitive learning (`scale_pos_weight` / balanced weights)
 - ✅ Cross-validation (stratified K-fold)
 - ✅ Model stability testing (repeated-seed CV)
+- ✅ Wiring tuned `best_params.json` into `train.py`
 
 Still open:
 
 - More advanced feature engineering
-- Wiring the tuned `best_params.json` / calibrated model into the production `train.py`
+- Serving the calibrated model from the API (probabilities, not just ranking)
 - Optuna-based search and cost-based threshold optimisation
 
 ### Evaluation Improvements
@@ -1584,3 +1662,43 @@ The final system can be used to:
 - Download scored prediction results as CSV
 
 This makes the project suitable as a portfolio-level, end-to-end machine learning deployment project.
+
+---
+
+## 23. Changelog
+
+Recent improvements layered on top of the original baseline:
+
+### Testing
+- Added a **pytest** suite (`tests/`) — **160 tests** across unit + integration/API
+  layers, with `pytest.ini` and `requirements-dev.txt` (`pytest`, `httpx`).
+  Integration/API tests auto-skip when trained artifacts are absent.
+
+### Reproducibility
+- **Pinned all dependencies** to exact versions in `requirements.txt`; added
+  `lightgbm`, `catboost`, `seaborn`.
+
+### Model improvement & validation (`src/`)
+- `cv_utils.py` — shared stratified-CV, imbalance weights and cost helpers.
+- `hyperparameter_tuning.py` — `RandomizedSearchCV` (PR-AUC, 5-fold).
+- `model_comparison.py` — XGBoost vs LightGBM vs CatBoost under identical CV.
+- `calibration.py` — sigmoid/isotonic calibration + Brier / reliability curve.
+- `stability.py` — repeated-seed CV stability testing.
+- `train.py` now **auto-loads `best_params.json`** (tuned hyperparameters) with a
+  safe fallback to manual defaults.
+
+### API hardening (`api/`)
+- Replaced deprecated `@app.on_event("startup")` with a **`lifespan`** handler.
+- **Optional API-key auth** (`api/security.py`) — enabled via `API_KEY` env.
+- **Structured error handling** — server-side logging, generic client messages,
+  `400` for client errors vs `500` for unexpected failures (no leaked internals).
+- **Request-logging middleware**, **CORS** (`ALLOWED_ORIGINS`).
+- **Upload size limit** (`MAX_UPLOAD_SIZE_MB`) on `/predict-file`.
+- **Prediction-output retention** (`api/maintenance.py`, `PREDICTION_RETENTION_HOURS`)
+  — expired CSVs purged on startup and after each file scoring.
+- API version bumped to **1.1.0**.
+
+### Documentation
+- README updated throughout: architecture tree, Testing section, Model
+  Improvement & Validation section (with visuals), Production Hardening +
+  configuration table, strengths, limitations and this changelog.
