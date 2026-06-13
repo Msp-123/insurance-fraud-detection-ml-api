@@ -1,5 +1,7 @@
 # Vehicle Insurance Claim Fraud Detection with XGBoost, SHAP and FastAPI
 
+[![CI](https://github.com/Msp-123/insurance-fraud-detection-ml-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Msp-123/insurance-fraud-detection-ml-api/actions/workflows/ci.yml)
+
 ## 1. Project Overview
 
 This project is an end-to-end machine learning system for detecting potentially fraudulent vehicle insurance claims.
@@ -950,6 +952,18 @@ With trained artifacts present, the full suite runs (unit + integration + API).
 Without them, the integration and API tests are reported as **skipped** rather
 than failing.
 
+### 9.6 Continuous Integration (CI)
+
+The test suite runs automatically on **GitHub Actions** on every push and pull
+request to `main`, defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+- Installs `requirements-dev.txt` on a clean Ubuntu runner (Python 3.9 and 3.11).
+- Runs `pytest`. Because the trained artifacts are gitignored, the runner has no
+  `model.pkl`, so the integration/API tests **auto-skip** and the 138 unit tests
+  run — verifying that the pinned dependencies install cleanly and the logic is
+  correct on a fresh machine.
+- A red ✗ on a pull request blocks broken code from reaching `main`.
+
 ---
 
 ## 10. FastAPI Service
@@ -1528,24 +1542,25 @@ Still open:
 
 ### API Improvements
 
-- Authentication
-- Request logging
-- Error logging
+- ✅ Authentication (optional API key)
+- ✅ Request logging
+- ✅ Error logging (structured, non-leaking)
+- ✅ File size validation
 - Async batch scoring
-- File size validation
 - Background jobs for large files
 - Download history
-- API versioning
+- Rate limiting / per-user accounts
 
 ### MLOps Improvements
 
+- ✅ CI pipeline running the pytest suite on every push (GitHub Actions)
 - Docker support
 - MLflow experiment tracking
 - Model registry
 - Data drift monitoring
 - Prediction drift monitoring
 - Automated retraining pipeline
-- CI/CD pipeline running the pytest suite on every push
+- CD: automated deploy after CI passes
 - Expanded test coverage (more edge cases, coverage reporting)
 
 ### UI Improvements
@@ -1669,10 +1684,12 @@ This makes the project suitable as a portfolio-level, end-to-end machine learnin
 
 Recent improvements layered on top of the original baseline:
 
-### Testing
+### Testing & CI
 - Added a **pytest** suite (`tests/`) — **160 tests** across unit + integration/API
   layers, with `pytest.ini` and `requirements-dev.txt` (`pytest`, `httpx`).
   Integration/API tests auto-skip when trained artifacts are absent.
+- Added **GitHub Actions CI** (`.github/workflows/ci.yml`) — runs the suite on
+  Python 3.9 and 3.11 on every push / pull request to `main`.
 
 ### Reproducibility
 - **Pinned all dependencies** to exact versions in `requirements.txt`; added
